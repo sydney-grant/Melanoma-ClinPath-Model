@@ -1,0 +1,416 @@
+---
+title: "Clustering Visualization"
+output: html_document
+date: "2024-05-29"
+---
+
+```{r, warnings = FALSE, echo = FALSE, include=FALSE}
+library(caret)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(randomForest)
+library(neuralnet)
+library(shapviz)
+library(kernelshap)
+```
+
+```{r}
+data <- read.csv("SEER_final.csv")[,-1]
+```
+
+Setting scaling factors and scaling SEER data for clustering
+```{r}
+set.seed(1)
+all <- subset(data, Stage == "Localized")
+rownames(all) <- 1:nrow(all)
+all.clust <- all[,c(1:9)]
+all.save <- all[as.numeric(rownames(all.clust)),]
+
+preProcValues_clust <- preProcess(all.clust, method = c("center", "scale"))
+
+all.clust <- predict(preProcValues_clust, all.clust)
+```
+
+```{r}
+set.seed(2)
+
+gmm = GMM(all.clust, 25, dist_mode = "eucl_dist", seed_mode = "random_subset", km_iter = 10,
+          em_iter = 10, verbose = F)   
+pr = predict(gmm, newdata = all.clust)
+```
+
+```{r}
+#opt_gmm_bic = Optimal_Clusters_GMM(all.clust, max_clusters = 100, criterion = "BIC", 
+#                               
+#                               dist_mode = "eucl_dist", seed_mode = "random_subset",
+#                               
+#                               km_iter = 10, em_iter = 10, var_floor = 1e-10)
+```
+
+```{r}
+#bic_df <- data.frame("Clusters" = 1:100, "BIC" = opt_gmm_bic)
+#bic_plot <- ggplot(bic_df, aes(x = Clusters, y = BIC)) +
+#  geom_point() +
+#  geom_line() +
+#  theme_bw() +
+#  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 14), axis.title = element_text(family = "serif", size = 14), axis.text = element_text(family = "serif", size = 12))
+#bic_plot
+```
+
+
+```{r}
+library(Rtsne)
+rownames(all.clust) <- 1:nrow(all.clust)
+unique_all.clust <- unique(all.clust)
+tsne_res <- Rtsne(unique_all.clust)
+tsne_vals <- as.data.frame(tsne_res$Y)
+colnames(tsne_vals) <- c("tSNE1", "tSNE2")
+tsne_vals$Cluster <- as.factor(pr[as.numeric(rownames(unique_all.clust))])
+tsne_vals$Breslow_Depth <- all$Breslow_Depth[as.numeric(rownames(unique_all.clust))]
+tsne_vals$Rows <- rownames(unique_all.clust)
+```
+
+
+```{r}
+p_tsne <- ggplot(subset(tsne_vals), aes(x=tSNE1, y=tSNE2, color=Cluster))+
+  geom_point(size = 0.3)+
+    theme_bw()+
+  theme(plot.title=element_text(hjust=0.5, family = "serif", size = 26), axis.title = element_text(family = "serif", size = 30), axis.text = element_text(family = "serif", size = 26), legend.key.size = unit(0.1, 'cm'), legend.title = element_text(hjust=0.5, family = "serif", size = 30), legend.text = element_text(family = "serif", size = 26)) 
+print(p_tsne)
+```
+```{r}
+bd_tsne <- ggplot(subset(tsne_vals), aes(x=tSNE1, y=tSNE2, color=Breslow_Depth))+
+  geom_point(size = 0.3)+
+    theme_bw()+
+  theme(plot.title=element_text(hjust=0.5, family = "serif", size = 26), axis.title = element_text(family = "serif", size = 30), axis.text = element_text(family = "serif", size = 26), legend.key.size = unit(0.1, 'cm'), legend.title = element_text(hjust=0.5, family = "serif", size = 30), legend.text = element_text(family = "serif", size = 26), legend.key.height = unit(5, "null"))  +
+  scale_color_gradient(low="#26C6DA", high="#ef5350")
+print(bd_tsne)
+```
+
+```{r}
+set.seed(1)
+all.save$Group <- pr
+
+calc_sig <- function(i, data){
+  data$Comparison <- NA
+  data$Comparison[data$Cluster != i] <- "NC"
+  data$Comparison[data$Cluster == i] <- "C"
+  if (length(unique(data$Comparison)) > 1){
+  logrank <- survdiff(Surv(MSS_Time, MSS) ~ Comparison, data = data)
+  pval <- logrank$pvalue
+  if ((logrank$obs[[1]]/nrow(subset(data, Comparison == "C"))) > (logrank$obs[[2]]/nrow(subset(data, Comparison == "NC")))){
+    risk <- "HR"
+  }
+  if ((logrank$obs[[1]]/nrow(subset(data, Comparison == "C"))) < (logrank$obs[[2]]/nrow(subset(data, Comparison == "NC")))){
+  risk <- "LR"
+  }
+  if ((logrank$obs[[1]]/nrow(subset(data, Comparison == "C"))) == (logrank$obs[[2]]/nrow(subset(data, Comparison == "NC")))){
+  risk <- NA
+  }
+  if (pval < 0.01){
+    sig <- "S"
+  }
+  if (pval >= 0.01){
+  sig <- "NS"
+  }
+  if (logrank$obs[[1]] == 0){
+    z <- 1
+  }
+    if (logrank$obs[[1]] > 0){
+    z <- 0
+    }
+  surv <- nrow(subset(data, Cluster == i & MSS == 1 & MSS_Time <= 60))/nrow(subset(data, Cluster == i))
+  row <- data.frame("Risk" = risk, "Significance" = sig, "Cluster" = i, "Z" = z, "Surv" = surv)
+  return(row)
+  }
+}
+
+```
+
+```{r}
+set.seed(1)
+all$Cluster <- as.factor(pr)
+bd1 <- subset(all, Breslow_Depth <= 0.5 & Stage == "Localized")
+
+data2 <- data.table::rbindlist(lapply(1:25, calc_sig, bd1))
+```
+
+```{r}
+bd1$Risk <- "NS"
+bd1$Risk[bd1$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd1$Risk[bd1$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+#bd1.tsne <- tsne_vals[rownames(subset(unique_all.clust, Breslow_Depth <= 0.5)),]
+bd1.tsne <- subset(tsne_vals, Breslow_Depth <= 0.5)
+
+bd1.tsne$Risk <- "NS"
+bd1.tsne$Risk[bd1.tsne$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd1.tsne$Risk[bd1.tsne$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+```
+
+```{r}
+bd1.clusts <- ggplot(bd1.tsne, aes(x=tSNE1, y=tSNE2, color=Cluster))+
+  geom_point(size = 0.1)+
+    theme_bw()+
+  ggtitle("Breslow Depth \u2264 0.5 mm") +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd1.clusts
+```
+
+```{r}
+
+bd1.tsne$Risk <- factor(bd1.tsne$Risk, levels = c("High-Risk", "Low-Risk", "NS"))
+bd1.risk <- ggplot(bd1.tsne, aes(x=tSNE1, y=tSNE2, color=Risk))+
+  geom_point(size = 0.1)+
+  ggtitle("Breslow Depth \u2264 0.5 mm") +
+    theme_bw()+
+  scale_color_manual(values = c("#ef5350", "#26C6DA", "#B0BEC5")) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd1.risk
+```
+
+```{r}
+logrank <- survdiff(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd1, Risk != "NS"))
+logrank
+```
+
+```{r}
+pval_label <- expression(paste(italic("p"), " < 0.0001"))
+```
+
+
+```{r}
+fit.clust <- survfit(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd1, Risk != "NS"))
+
+bd1_surv <- ggsurvplot(fit = fit.clust, data = subset(bd1, Risk != "NS"), censor.size = 1)$plot
+bd1_surv <- bd1_surv +
+  ggtitle("Breslow Depth \u2264 0.5 mm") +
+    theme_bw()+
+    xlab("Months") +
+    ylab("Survival Probability")+
+  scale_color_manual(values = c("#ef5350", "#26C6DA")) +
+  annotate(geom="text", x=25, y=0.2, label=pval_label,
+              color="black", size = 8) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22), legend.text = element_text(family = "serif", size = 22), legend.title = element_text(family = "serif", size = 22))
+bd1_surv
+```
+########### 0.5 - 1 mm 
+
+```{r}
+set.seed(1)
+all$Cluster <- as.factor(pr)
+bd2 <- subset(all, Breslow_Depth > 0.5 & Breslow_Depth <= 1 & Stage == "Localized")
+
+data2 <- data.table::rbindlist(lapply(1:25, calc_sig, bd2))
+```
+
+```{r}
+bd2$Risk <- "NS"
+bd2$Risk[bd2$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd2$Risk[bd2$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+bd2.tsne <- subset(tsne_vals,Breslow_Depth > 0.5 & Breslow_Depth <= 1)
+
+bd2.tsne$Risk <- "NS"
+bd2.tsne$Risk[bd2.tsne$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd2.tsne$Risk[bd2.tsne$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+```
+
+```{r}
+bd2.clusts <- ggplot(bd2.tsne, aes(x=tSNE1, y=tSNE2, color=Cluster))+
+  geom_point(size = 0.1)+
+    theme_bw()+
+  ggtitle("Breslow Depth > 0.5 mm & \u2264 1 mm") +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd2.clusts
+```
+
+```{r}
+
+bd2.tsne$Risk <- factor(bd2.tsne$Risk, levels = c("High-Risk", "Low-Risk", "NS"))
+bd2.risk <- ggplot(bd2.tsne, aes(x=tSNE1, y=tSNE2, color=Risk))+
+  geom_point(size = 0.1)+
+  ggtitle("Breslow Depth > 0.5 mm & \u2264 1 mm") +
+    theme_bw()+
+  scale_color_manual(values = c("#ef5350", "#26C6DA", "#B0BEC5")) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd2.risk
+```
+
+```{r}
+logrank <- survdiff(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd2, Risk != "NS"))
+logrank
+```
+
+```{r}
+pval_label <- expression(paste(italic("p"), " < 0.0001"))
+```
+
+
+```{r}
+fit.clust <- survfit(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd2, Risk != "NS"))
+
+bd2_surv <- ggsurvplot(fit = fit.clust, data = subset(bd2, Risk != "NS"), censor.size = 1)$plot
+bd2_surv <- bd2_surv +
+  ggtitle("Breslow Depth > 0.5 mm & \u2264 1 mm") +
+    theme_bw()+
+    xlab("Months") +
+    ylab("Survival Probability")+
+  scale_color_manual(values = c("#ef5350", "#26C6DA")) +
+  annotate(geom="text", x=25, y=0.2, label=pval_label,
+              color="black", size = 8) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd2_surv
+```
+
+######### > 1mm and <= 4 mm
+
+```{r}
+set.seed(1)
+all$Cluster <- as.factor(pr)
+bd3 <- subset(all, Breslow_Depth > 1 & Breslow_Depth <= 4 & Stage == "Localized")
+
+data2 <- data.table::rbindlist(lapply(1:25, calc_sig, bd3))
+```
+
+```{r}
+bd3$Risk <- "NS"
+bd3$Risk[bd3$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd3$Risk[bd3$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+bd3.tsne <- subset(tsne_vals,Breslow_Depth > 1 & Breslow_Depth <= 4)
+
+bd3.tsne$Risk <- "NS"
+bd3.tsne$Risk[bd3.tsne$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd3.tsne$Risk[bd3.tsne$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+```
+
+```{r}
+bd3.clusts <- ggplot(bd3.tsne, aes(x=tSNE1, y=tSNE2, color=Cluster))+
+  geom_point(size = 0.1)+
+    theme_bw()+
+  ggtitle("Breslow Depth > 1 mm & \u2264 4 mm") +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd3.clusts
+```
+
+```{r}
+
+bd3.tsne$Risk <- factor(bd3.tsne$Risk, levels = c("High-Risk", "Low-Risk", "NS"))
+bd3.risk <- ggplot(bd3.tsne, aes(x=tSNE1, y=tSNE2, color=Risk))+
+  geom_point(size = 0.1)+
+  ggtitle("Breslow Depth > 1 mm & \u2264 4 mm") +
+    theme_bw()+
+  scale_color_manual(values = c("#ef5350", "#26C6DA", "#B0BEC5")) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd3.risk
+```
+
+```{r}
+logrank <- survdiff(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd3, Risk != "NS"))
+logrank
+```
+
+```{r}
+pval_label <- expression(paste(italic("p"), " < 0.0001"))
+```
+
+
+```{r}
+fit.clust <- survfit(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd3, Risk != "NS"))
+
+bd3_surv <- ggsurvplot(fit = fit.clust, data = subset(bd3, Risk != "NS"), censor.size = 1)$plot
+bd3_surv <- bd3_surv +
+  ggtitle("Breslow Depth > 1 mm & \u2264 4 mm") +
+    theme_bw()+
+    xlab("Months") +
+    ylab("Survival Probability")+
+  scale_color_manual(values = c("#ef5350", "#26C6DA")) +
+  annotate(geom="text", x=25, y=0.2, label=pval_label,
+              color="black", size = 8) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd3_surv
+```
+
+######### > 4 mm
+
+```{r}
+set.seed(1)
+all$Cluster <- as.factor(pr)
+bd4 <- subset(all, Breslow_Depth > 4 & Stage == "Localized")
+
+data2 <- data.table::rbindlist(lapply(1:25, calc_sig, bd4))
+```
+
+```{r}
+bd4$Risk <- "NS"
+bd4$Risk[bd4$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd4$Risk[bd4$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+bd4.tsne <- subset(tsne_vals,Breslow_Depth > 4)
+
+bd4.tsne$Risk <- "NS"
+bd4.tsne$Risk[bd4.tsne$Cluster %in% subset(data2, Risk == "HR" & Significance == "S")$Cluster] <- "High-Risk"
+bd4.tsne$Risk[bd4.tsne$Cluster %in% subset(data2, Risk == "LR" & Significance == "S")$Cluster] <- "Low-Risk"
+
+```
+
+```{r}
+bd4.clusts <- ggplot(bd4.tsne, aes(x=tSNE1, y=tSNE2, color=Cluster))+
+  geom_point(size = 0.1)+
+    theme_bw()+
+  ggtitle("Breslow Depth > 4 mm") +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd4.clusts
+```
+
+```{r}
+
+bd4.tsne$Risk <- factor(bd4.tsne$Risk, levels = c("High-Risk", "Low-Risk", "NS"))
+bd4.risk <- ggplot(bd4.tsne, aes(x=tSNE1, y=tSNE2, color=Risk))+
+  geom_point(size = 0.1)+
+  ggtitle("Breslow Depth > 4 mm") +
+    theme_bw()+
+  scale_color_manual(values = c("#ef5350", "#26C6DA", "#B0BEC5")) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd4.risk
+```
+
+```{r}
+logrank <- survdiff(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd4, Risk != "NS"))
+logrank
+```
+
+```{r}
+pval_label <- expression(paste(italic("p"), " < 0.0001"))
+```
+
+
+```{r}
+fit.clust <- survfit(Surv(MSS_Time, MSS) ~ Risk, data = subset(bd4, Risk != "NS"))
+
+bd4_surv <- ggsurvplot(fit = fit.clust, data = subset(bd4, Risk != "NS"), censor.size = 1)$plot
+bd4_surv <- bd4_surv +
+  ggtitle("Breslow Depth > 4 mm") +
+    theme_bw()+
+    xlab("Months") +
+    ylab("Survival Probability")+
+  scale_color_manual(values = c("#ef5350", "#26C6DA")) +
+  annotate(geom="text", x=25, y=0.2, label=pval_label,
+              color="black", size = 8) +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5, family = "serif", size = 24), axis.title = element_text(family = "serif", size = 24), axis.text = element_text(family = "serif", size = 22))
+bd4_surv
+```
+
+
+```{r}
+final_plot <- ggpubr::ggarrange(bd1_surv, bd1.risk,
+                                bd2_surv, bd2.risk,
+                                bd3_surv, bd3.risk,
+                                bd4_surv, bd4.risk, nrow = 4, ncol = 2, common.legend = TRUE, legend = "bottom")
+### 1600 x 2000 saved jpeg
+```

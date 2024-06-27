@@ -1,0 +1,168 @@
+---
+title: "Data Curation"
+author: "Sydney Grant"
+date: "2024-05-15"
+output: html_document
+---
+
+```{r, warning = FALSE}
+data <- read.csv("SEER Data and Staging.csv")
+data$Case_Number <- 1:nrow(data)
+data$Survival.months <- as.numeric(data$Survival.months)
+colnames(data)[[32]] <- "Breslow_Depth"
+colnames(data)[[33]] <- "Mitotic.Rate"
+colnames(data)[[34]] <- "Ulceration"
+```
+
+all cases : 393,957
+
+```{r}
+data$Stage <- data$Combined.Summary.Stage..2004..
+
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Summary.stage.2000..1998.2017. == "Localized"] <- "Localized"
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Summary.stage.2000..1998.2017. == "Regional"] <- "Regional"
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Summary.stage.2000..1998.2017. == "Distant"] <- "Distant"
+
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged")& data$X7th.Edition.Stage.Group.Recode..2016.2017. %in% c("I", "IA", "IB", "IIA", "IIB", "IIC")] <- "Localized"
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$X7th.Edition.Stage.Group.Recode..2016.2017. %in% c("III", "IIIA", "IIIB", "IIIC")] <- "Regional"
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$X7th.Edition.Stage.Group.Recode..2016.2017. %in% c("IV")] <- "Distant"
+
+
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Derived.AJCC.Stage.Group..7th.ed..2010.2015. %in% c("IA", "IB", "IIA", "IIB", "IIC", "IINOS", "INOS")] <- "Localized"
+data$Stage[data$Stage == "Unknown/unstaged" & data$Derived.AJCC.Stage.Group..7th.ed..2010.2015. %in% c("IIIA")] <- "Regional"
+
+
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Derived.SEER.Cmb.Stg.Grp..2016.2017. %in% c("1", "1A", "1B", "2A", "2B", "2C")] <- "Localized"
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Derived.SEER.Cmb.Stg.Grp..2016.2017. %in% c("3", "3A", "3B", "3C")] <- "Regional"
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Derived.SEER.Cmb.Stg.Grp..2016.2017. %in% c("4")] <- "Distant"
+
+
+data$Stage[data$Stage %in% c("Blank(s)", "Unknown/unstaged") & data$Derived.AJCC.Stage.Group..6th.ed..2004.2015. %in% c("IB", "IIA", "IIB", "IIC", "IINOS")] <- "Localized"
+```
+
+```{r}
+data2 <- subset(data, Breslow_Depth != "Blank(s)")
+data2 <- subset(data2, Breslow_Depth != "Unknown/Indeterminate/Not assessed; In situ; Microinvasion/microscopic foci only")
+data2 <- subset(data2, Breslow_Depth != "No mass/tumor found")
+
+data3 <- subset(data2, Mitotic.Rate != "Not documented; Not assessed or unknown if assessed")
+data3 <- subset(data3, Mitotic.Rate != "Mitotic rate described with denominator other than square millimeter (mm)")
+data3 <- subset(data3, Mitotic.Rate != "Test ordered, results not in chart")
+
+data4 <- subset(data3, Ulceration != "Not documented/assessed; No mention in path report; Pathologist cant determine")
+data4 <- subset(data4, Ulceration != "Blank(s)")
+
+colnames(data4)[[7]] <- "Site"
+
+data5 <- subset(data4, Site != "C44.9-Skin, NOS")
+data5 <- subset(data5, Site != "C44.8-Overlapping lesion of skin")
+```
+
+```{r}
+data6 <- subset(data5, Stage == "Localized")
+
+data6 <- subset(data6, SEER.cause.specific.death.classification != "Dead (missing/unknown COD)")
+data6 <- subset(data6, SEER.cause.specific.death.classification != "N/A not seq 0-59")
+data6$MSS <- 0
+data6$MSS[data6$SEER.cause.specific.death.classification == "Dead (attributable to this cancer dx)"] <- 1
+
+data7 <- data6
+```
+
+```{r}
+rm.patients <- c()
+
+for (i in unique(subset(data7, MSS == 1)$Patient.ID)){
+  if (nrow(subset(data7, Patient.ID == i)) > 1){rm.patients <- c(rm.patients, i)}
+}
+
+rm <- subset(data7, Patient.ID %in% rm.patients)
+data8 <- dplyr::setdiff(data7, rm)
+```
+
+```{r}
+data9 <- data8
+data9$Sex[data9$Sex == "Male"] <- 1
+data9$Sex[data9$Sex == "Female"] <- 0
+```
+
+```{r}
+data9$FaceHeadNeck <- 0
+data9$FaceHeadNeck[data9$Primary.Site...labeled %in% c("C44.3-Skin other/unspec parts of face", "C44.0-Skin of lip, NOS", "C44.2-External ear", "C44.4-Skin of scalp and neck", "C44.1-Eyelid")] <- 1
+
+data9$UpperLimbShoulder <- 0
+data9$UpperLimbShoulder[data9$Primary.Site...labeled %in% c("C44.6-Skin of upper limb and shoulder")] <- 1
+
+data9$LowerLimbHip <- 0
+data9$LowerLimbHip[data9$Primary.Site...labeled  %in% c("C44.7-Skin of lower limb and hip")] <- 1
+
+data9$Trunk <- 0
+data9$Trunk[data9$Primary.Site...labeled %in% c("C44.5-Skin of trunk")] <- 1
+```
+
+```{r}
+data9$Superficial_Spreading <- 0
+data9$Superficial_Spreading[data9$ICD.O.3.Hist.behav == "8743/3: Superficial spreading melanoma"] <- 1
+
+data9$Nodular <- 0
+data9$Nodular[data9$ICD.O.3.Hist.behav == "8721/3: Nodular melanoma"] <- 1
+
+data9$Desmoplastic <- 0
+data9$Desmoplastic[data9$ICD.O.3.Hist.behav == "8745/3: Desmoplastic melanoma, malignant"] <- 1
+
+data9$Lentigo_Maligna <- 0
+data9$Lentigo_Maligna[data9$ICD.O.3.Hist.behav == "8742/3: Lentigo maligna melanoma"] <- 1
+
+data9$Acral_Lentiginous <- 0
+data9$Acral_Lentiginous[data9$ICD.O.3.Hist.behav == "8744/3: Acral lentiginous melanoma, malignant"] <- 1
+```
+
+```{r}
+data9$Breslow_Depth[data9$Breslow_Depth == "9.8 millimeters or larger"] <- "9.8"
+data9$Breslow_Depth[data9$Breslow_Depth == "Greater than 0.0 and less than or equal to 0.1"] <- "0.1"
+data9$Breslow_Depth <- as.numeric(data9$Breslow_Depth)
+```
+
+```{r}
+data9$Mitotic.Rate[data9$Mitotic.Rate == "0 mitoses per square mm; Mitoses absent; No mitoses present"] <- "0"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "Stated as less than 1 mitosis/square mm; Stated as nonmitogenic"] <- "0"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "11 or more mitoses/square mm"] <- "11"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "Stated as at least 1 mitosis/square mm; Stated as mitogenic"] <- "1"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "01"] <- "1"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "02"] <- "2"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "03"] <- "3"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "04"] <- "4"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "05"] <- "5"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "06"] <- "6"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "07"] <- "7"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "08"] <- "8"
+data9$Mitotic.Rate[data9$Mitotic.Rate == "09"] <- "9"
+data9$Mitotic.Rate <- as.numeric(data9$Mitotic.Rate)
+```
+
+```{r}
+data9$Ulceration[data9$Ulceration == "Ulceration not identified/not present"] <- 0
+data9$Ulceration[data9$Ulceration == "Ulceration present"] <- 1
+```
+
+```{r}
+age <- c()
+for (i in 1:nrow(data9)){
+  age <- c(age, substr(data9$Age.recode.with.single.ages.and.90.[[i]], 1, 2))
+}
+
+data9$Age <- unlist(age)
+```
+
+```{r}
+data9 <- data9[,c("Age", "Ulceration", "Breslow_Depth", "Mitotic.Rate", "Sex", "FaceHeadNeck", "UpperLimbShoulder", "LowerLimbHip", "Trunk", "Superficial_Spreading", "Nodular", "Desmoplastic", "Lentigo_Maligna", "Acral_Lentiginous", "MSS", "Survival.months", "Stage")]
+colnames(data9) <- c("Age", "Ulceration", "Breslow_Depth", "Mitotic_Rate", "Sex", "FaceHeadNeck", "UpperLimbShoulder", "LowerLimbHip", "Trunk", "Superficial_Spreading", "Nodular", "Desmoplastic", "Lentigo_Maligna", "Acral_Lentiginous", "MSS", "MSS_Time", "Stage")
+```
+
+```{r}
+write.csv(data9, "C:\\Users\\sy43548\\OneDrive - Roswell Park Comprehensive Cancer Center\\Documents\\TRIMel\\Datasets\\SEER_Final.csv")
+```
+
+
+
+
